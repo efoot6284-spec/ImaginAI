@@ -1,0 +1,109 @@
+version: "2"
+type: backend
+tech_stack:
+  - Python 3.11
+  - FastAPI
+  - Uvicorn
+  - FFmpeg
+  - Pexels API
+  - Pixabay API
+  - Gemini API
+  - Groq Whisper
+features:
+  - name: Health Check
+    description: System health check endpoint
+    files:
+      - app/main.py
+    endpoints:
+      - method: GET
+        path: /health
+        description: Health check endpoint returning ok status
+        auth_required: false
+        response_schema:
+          "200": object
+  - name: Voice Listing
+    description: Get available TTS voices catalog and providers
+    files:
+      - app/main.py
+      - app/config.py
+    endpoints:
+      - method: GET
+        path: /api/voices
+        description: List all available TTS providers and voice models
+        auth_required: false
+        response_schema:
+          "200": object
+  - name: Voice Preview
+    description: Generate audio preview for chosen TTS provider and voice
+    files:
+      - app/main.py
+      - app/services/gemini_tts.py
+    endpoints:
+      - method: GET
+        path: /api/voices/preview
+        description: Stream short audio sample for voice selection
+        auth_required: false
+        response_schema:
+          "200": file
+  - name: Video Generation Job Creation
+    description: Submit prompt and start video generation pipeline in background
+    files:
+      - app/main.py
+      - app/pipeline.py
+      - app/services/rate_limit.py
+    endpoints:
+      - method: POST
+        path: /api/jobs
+        description: Create a new video generation job
+        auth_required: false
+        request_schema:
+          body:
+            idea: string
+            duration: number
+            style: string
+            voice: string
+            voice_provider: string
+        response_schema:
+          "200": object
+          "429": Rate limit exceeded
+  - name: Job Status Polling
+    description: Retrieve generation status and progress
+    files:
+      - app/main.py
+    endpoints:
+      - method: GET
+        path: /api/jobs/{job_id}/status
+        description: Check job status and step details
+        auth_required: false
+        response_schema:
+          "200": object
+          "404": Job not found
+  - name: Download Video
+    description: Download finished generated video file
+    files:
+      - app/main.py
+    endpoints:
+      - method: GET
+        path: /api/jobs/{job_id}/download
+        description: Download output mp4 video file
+        auth_required: false
+        response_schema:
+          "200": file
+          "404": Video not ready
+  - name: User Feedback
+    description: Receive user feedback suggestions
+    files:
+      - app/main.py
+    endpoints:
+      - method: POST
+        path: /api/feedback
+        description: Submit user feedback message
+        auth_required: false
+        request_schema:
+          body:
+            message: string
+            contact: string
+        response_schema:
+          "200": object
+          "400": Missing message
+known_limitations: []

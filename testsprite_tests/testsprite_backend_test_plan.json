@@ -1,0 +1,37 @@
+[
+  {
+    "id": "TC001",
+    "title": "health_check_endpoint_returns_ok_status",
+    "description": "Verify that GET /health returns a 200 response with an ok status when the backend service is running normally."
+  },
+  {
+    "id": "TC002",
+    "title": "voice_listing_returns_available_tts_providers_and_voices",
+    "description": "Verify that GET /api/voices returns a 200 response with the list of available text-to-speech providers and voice models."
+  },
+  {
+    "id": "TC003",
+    "title": "voice_preview_streams_audio_sample_for_valid_parameters",
+    "description": "Verify that GET /api/voices/preview with valid voice and provider parameters returns a 200 response streaming a short audio sample for voice preview."
+  },
+  {
+    "id": "TC004",
+    "title": "video_generation_job_creation_starts_pipeline_and_returns_job_id",
+    "description": "Verify that POST /api/jobs with valid idea, duration, style, voice, and voice_provider returns a 200 response with job details including job_id and starts the background video generation pipeline."
+  },
+  {
+    "id": "TC005",
+    "title": "job_status_polling_returns_current_status_for_existing_job",
+    "description": "Verify that GET /api/jobs/{job_id}/status for an existing in-progress job returns a 200 response with current status and progress details."
+  },
+  {
+    "id": "TC006",
+    "title": "download_video_returns_mp4_file_for_completed_job",
+    "description": "Verify that GET /api/jobs/{job_id}/download for a completed job returns a 200 response with the MP4 video file for download."
+  },
+  {
+    "id": "TC007",
+    "title": "user_feedback_submission_accepts_valid_message",
+    "description": "Verify that POST /api/feedback with a valid message and optional contact information returns a 200 response confirming feedback submission."
+  }
+]
