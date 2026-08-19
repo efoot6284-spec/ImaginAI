@@ -27,10 +27,38 @@ async def _retry_async(coro_fn, max_retries: int = 3, base_delay: float = 2.0):
             await asyncio.sleep(delay)
 
 
+# ── Fallback timestamp generator ─────────────────────────────────────────────
+
+def _generate_estimated_word_timestamps(audio_path: str, text: str = "") -> list[WordTimestamp]:
+    """Fallback: estimate word timestamps linearly based on audio file duration."""
+    import wave
+    duration = 5.0
+    try:
+        with wave.open(audio_path, "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            duration = frames / float(rate)
+    except Exception:
+        pass
+
+    words_raw = [w.strip() for w in text.split() if w.strip()]
+    if not words_raw:
+        words_raw = ["..." for _ in range(5)]
+
+    time_per_word = duration / len(words_raw)
+    result = []
+    curr = 0.0
+    for w in words_raw:
+        end_time = curr + time_per_word
+        result.append(WordTimestamp(word=w, start=round(curr, 2), end=round(end_time, 2)))
+        curr = end_time
+    return result
+
+
 # ── Single file transcription ───────────────────────────────────────────────
 
-async def transcribe_audio(audio_path: str) -> list[WordTimestamp]:
-    """Transcribe a single WAV file using Groq Whisper, returning word-level timestamps."""
+async def transcribe_audio(audio_path: str, narration_text: str = "") -> list[WordTimestamp]:
+    """Transcribe a single WAV file using Groq Whisper, falling back to estimation if API fails (e.g. 401 Unauthorized)."""
 
     async def _call():
         async with httpx.AsyncClient() as client:
@@ -49,18 +77,23 @@ async def transcribe_audio(audio_path: str) -> list[WordTimestamp]:
                 resp.raise_for_status()
                 return resp.json()
 
-    data = await _retry_async(_call)
+    try:
+        data = await _retry_async(_call, max_retries=2, base_delay=1.0)
+        # Extract word-level timestamps
+        words = []
+        if isinstance(data, dict):
+            for w in data.get("words", []):
+                words.append(WordTimestamp(
+                    word=w["word"],
+                    start=w["start"],
+                    end=w["end"],
+                ))
+            if words:
+                return words
+    except Exception as e:
+        print(f"[Captions] Groq Whisper API error ({e}). Using estimated timestamp fallback...")
 
-    # Extract word-level timestamps
-    words = []
-    for w in data.get("words", []):
-        words.append(WordTimestamp(
-            word=w["word"],
-            start=w["start"],
-            end=w["end"],
-        ))
-
-    return words
+    return _generate_estimated_word_timestamps(audio_path, narration_text)
 
 
 # ── Group words into subtitle lines ─────────────────────────────────────────
@@ -70,6 +103,9 @@ def group_words_into_lines(words: list[WordTimestamp], max_words_per_line: int =
     Group words into subtitle lines of max N words.
     Returns list of {"text": str, "start": float, "end": float}.
     """
+    if not words:
+        return []
+
     lines = []
     for i in range(0, len(words), max_words_per_line):
         chunk = words[i:i + max_words_per_line]
@@ -83,7 +119,11 @@ def group_words_into_lines(words: list[WordTimestamp], max_words_per_line: int =
 
 # ── All scenes ──────────────────────────────────────────────────────────────
 
-async def transcribe_all(audio_paths: list[str], job_dir: Path) -> list[list[dict]]:
+async def transcribe_all(
+    audio_paths: list[str],
+    job_dir: Path,
+    scenes: list | None = None,
+) -> list[list[dict]]:
     """
     Transcribe all audio files, return grouped subtitle lines per scene.
     Also saves caption data to job_dir/captions/.
@@ -96,7 +136,8 @@ async def transcribe_all(audio_paths: list[str], job_dir: Path) -> list[list[dic
 
     for i, audio_path in enumerate(audio_paths):
         print(f"[Captions] Transcribing scene {i}...")
-        words = await transcribe_audio(audio_path)
+        narration = scenes[i].narration if (scenes and i < len(scenes)) else ""
+        words = await transcribe_audio(audio_path, narration_text=narration)
         lines = group_words_into_lines(words)
 
         # Save caption data
@@ -109,7 +150,8 @@ async def transcribe_all(audio_paths: list[str], job_dir: Path) -> list[list[dic
 
         # Small delay between API calls
         if i < len(audio_paths) - 1:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
     print(f"[Captions] Transcribed {len(all_captions)} scenes")
     return all_captions
+

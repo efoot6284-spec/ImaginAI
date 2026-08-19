@@ -21,6 +21,12 @@ load_dotenv(_env_path)
 JOBS_DIR = _backend_dir / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
+STORAGE_DIR = _backend_dir / "storage"
+STORAGE_DIR.mkdir(exist_ok=True)
+
+DATA_DIR = _backend_dir / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
 # ── API Keys (never hardcoded) ───────────────────────────────────────────────
 def get_gemini_keys() -> list[str]:
     """
@@ -74,7 +80,14 @@ def get_groq_key() -> str:
         raise RuntimeError("GROQ_API_KEY is not set in .env")
     return key
 
+def get_fish_audio_key() -> str:
+    key = os.getenv("FISH_AUDIO_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("FISH_AUDIO_API_KEY is not set in .env")
+    return key
+
 # ── Model Constants ──────────────────────────────────────────────────────────
+
 GEMINI_SCRIPT_MODEL = "gemini-3.6-flash"
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 GEMINI_TTS_VOICE = "Kore"
@@ -133,15 +146,15 @@ VOICE_PROVIDERS = [
     },
     {
         "provider": "gemini",
-        "provider_name": "Google AI Studio (Gemini TTS)",
-        "desc": "أصوات ذكاء اصطناعي سينمائية فائقة من Google",
+        "provider_name": "Google Gemini (imaginAI Mini)",
+        "desc": "أصوات الذكاء الاصطناعي الرسمية المتاحة بموديل Gemini TTS",
         "voices": [
             {
                 "id": "Kore",
                 "name": "كوري (Kore)",
                 "gender": "female",
                 "lang": "متعدد اللغات",
-                "desc": "صوت أنثوي طبيعي وحيوي",
+                "desc": "صوت أنثوي طبيعي وحيوي مناسب للقصص والسرد",
             },
             {
                 "id": "Puck",
@@ -155,7 +168,14 @@ VOICE_PROVIDERS = [
                 "name": "كارون (Charon)",
                 "gender": "male",
                 "lang": "متعدد اللغات",
-                "desc": "صوت ذكوري عميق ودافئ",
+                "desc": "صوت ذكوري عميق ودافئ للوثائقيات",
+            },
+            {
+                "id": "Fenrir",
+                "name": "فينرير (Fenrir)",
+                "gender": "male",
+                "lang": "متعدد اللغات",
+                "desc": "صوت ذكوري قوي ومباشر",
             },
             {
                 "id": "Aoede",
@@ -165,36 +185,44 @@ VOICE_PROVIDERS = [
                 "desc": "صوت أنثوي سينمائي ومميز",
             },
             {
-                "id": "Fenrir",
-                "name": "فينرير (Fenrir)",
+                "id": "Leda",
+                "name": "ليدا (Leda)",
+                "gender": "female",
+                "lang": "متعدد اللغات",
+                "desc": "صوت أنثوي واضح ورقيق",
+            },
+            {
+                "id": "Orus",
+                "name": "اوروس (Orus)",
                 "gender": "male",
                 "lang": "متعدد اللغات",
-                "desc": "صوت ذكوري قوي ومباشر",
+                "desc": "صوت ذكوري رسمي ورصين",
+            },
+            {
+                "id": "Zephyr",
+                "name": "زفير (Zephyr)",
+                "gender": "female",
+                "lang": "متعدد اللغات",
+                "desc": "صوت أنثوي هادئ وناعم",
             },
         ],
     },
     {
-        "provider": "gtts",
-        "provider_name": "gTTS (مكتبة بايثون مجانية)",
-        "desc": "صوت تحويل النص إلى كلام القياسي والمستقر",
+        "provider": "fish-audio",
+        "provider_name": "Fish Audio",
+        "desc": "أصوات فائقة الجودة من منصة Fish Audio المتاحة لحسابك",
         "voices": [
             {
-                "id": "ar",
-                "name": "Google Arabic Standard",
-                "gender": "female",
-                "lang": "العربية",
-                "desc": "الصوت العربي القياسي المباشر من Google",
-            },
-            {
-                "id": "en",
-                "name": "Google English Standard",
-                "gender": "female",
-                "lang": "English",
-                "desc": "Standard clear English narration voice",
-            },
+                "id": "default",
+                "name": "Fish Audio Default Voice",
+                "gender": "neutral",
+                "lang": "العربية / English",
+                "desc": "الصوت الافتراضي الأساسي لمنصة Fish Audio",
+            }
         ],
     },
 ]
+
 
 
 # ── Style Template Configuration ─────────────────────────────────────────────

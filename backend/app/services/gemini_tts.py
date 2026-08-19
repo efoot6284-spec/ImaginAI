@@ -72,16 +72,23 @@ def _get_compatible_edge_voice(voice: str, text: str) -> str:
     is_female = any(name in voice for name in ["Salma", "Zariyah", "Kore", "Aoede", "Jenny", "female"])
 
     if lang == "en":
-        return "en-US-JennyNeural" if is_female else "en-US-ChristopherNeural"
-    else:
-        # Arabic
-        if "Hamdan" in voice:
-            return "ar-AE-HamdanNeural"
-        elif "Zariyah" in voice:
-            return "ar-SA-ZariyahNeural"
+        if "Charon" in voice or "Hamed" in voice:
+            return "en-US-GuyNeural"
+        elif "Aoede" in voice or "Zariyah" in voice:
+            return "en-US-AriaNeural"
         elif is_female:
-            return "ar-EG-SalmaNeural"
+            return "en-US-JennyNeural"
         else:
+            return "en-US-ChristopherNeural"
+    else:
+        # Arabic — map 4 distinct voices for Puck, Charon, Kore, Aoede
+        if "Charon" in voice:
+            return "ar-AE-HamdanNeural"
+        elif "Aoede" in voice:
+            return "ar-SA-ZariyahNeural"
+        elif "Kore" in voice or is_female:
+            return "ar-EG-SalmaNeural"
+        else:  # Puck / default male
             return "ar-SA-HamedNeural"
 
 
@@ -343,23 +350,22 @@ async def _generate_gtts(text: str, output_path: str, voice: str) -> str:
 async def generate_speech(
     text: str,
     output_path: str,
-    voice: str = "ar-SA-HamedNeural",
-    provider: str = "edge-tts",
+    voice: str = "Kore",
+    provider: str = "gemini",
 ) -> str:
     """
     Generate speech for a single narration scene using the chosen provider and voice.
-    Cleans text, matches languages, and preserves male vs female voice distinction.
+    Strictly uses the specified provider with NO automatic fallback to other providers.
     """
     cleaned_text = _clean_text(text)
-    prov = (provider or "edge-tts").lower()
+    prov = (provider or "gemini").lower()
 
     if prov == "gemini":
-        try:
-            return await _generate_gemini(cleaned_text, output_path, voice)
-        except Exception as e:
-            print(f"[TTS Warning] Gemini TTS failed ({e}). Falling back to Edge-TTS with compatible voice...")
-            edge_voice = _get_compatible_edge_voice(voice, cleaned_text)
-            return await _generate_edge_tts(cleaned_text, output_path, edge_voice)
+        return await _generate_gemini(cleaned_text, output_path, voice)
+
+    elif prov in ["fish-audio", "fish_audio", "fish"]:
+        from app.services.fish_audio_tts import generate_speech_fish_audio
+        return await generate_speech_fish_audio(cleaned_text, output_path, voice)
 
     elif prov in ["edge-tts", "edge_tts", "edge"]:
         return await _generate_edge_tts(cleaned_text, output_path, voice)
@@ -368,7 +374,9 @@ async def generate_speech(
         return await _generate_gtts(cleaned_text, output_path, voice)
 
     else:
-        return await _generate_edge_tts(cleaned_text, output_path, voice or "ar-SA-HamedNeural")
+        # Default to Gemini TTS
+        return await _generate_gemini(cleaned_text, output_path, voice or "Kore")
+
 
 
 # ── All scenes TTS ──────────────────────────────────────────────────────────
@@ -378,20 +386,22 @@ async def generate_all_speech(
     job_dir: Path,
     voice: str = "ar-SA-HamedNeural",
     provider: str = "edge-tts",
+    start_index: int = 0,
 ) -> list[str]:
-    """Generate speech for all scenes sequentially."""
+    """Generate speech for all scenes sequentially starting at start_index."""
 
     audio_dir = job_dir / "audio"
     audio_dir.mkdir(exist_ok=True)
 
     audio_paths = []
     for i, scene in enumerate(scenes):
-        output_path = str(audio_dir / f"scene_{i}.wav")
+        idx = start_index + i
+        output_path = str(audio_dir / f"scene_{idx}.wav")
         await generate_speech(scene.narration, output_path, voice=voice, provider=provider)
         audio_paths.append(output_path)
 
         if i < len(scenes) - 1:
             await asyncio.sleep(0.5)
 
-    print(f"[TTS] Generated {len(audio_paths)} audio files using provider '{provider}' and voice '{voice}'")
+    print(f"[TTS] Generated {len(audio_paths)} audio files (indices {start_index}..{start_index + len(audio_paths) - 1}) using provider '{provider}' and voice '{voice}'")
     return audio_paths

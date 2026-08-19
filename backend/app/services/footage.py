@@ -254,16 +254,262 @@ async def _search_pixabay_images(keywords: list[str], client: httpx.AsyncClient)
     return results
 
 
-# ── Download file to local disk ─────────────────────────────────────────────
+# ── License Validation Helper ────────────────────────────────────────────────
 
-async def _download_video(url: str, output_path: str, client: httpx.AsyncClient) -> None:
-    """Download a video/image file to local disk (no hotlinking)."""
-    async with client.stream("GET", url, timeout=60, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(output_path, "wb") as f:
-            async for chunk in resp.aiter_bytes(chunk_size=8192):
-                f.write(chunk)
-    print(f"[Footage] Downloaded to {output_path}")
+def _is_valid_license(extmetadata: dict, license_url_str: str = "") -> bool:
+    """Return True if license is Public Domain, CC0, CC-BY, or open license."""
+    lic_name = str(extmetadata.get("LicenseShortName", {}).get("value", "")).lower()
+    lic_url = str(extmetadata.get("LicenseUrl", {}).get("value", "") or license_url_str).lower()
+    usage_terms = str(extmetadata.get("UsageTerms", {}).get("value", "")).lower()
+    combined = f"{lic_name} {lic_url} {usage_terms}"
+    
+    valid_keywords = [
+        "public domain", "pd", "cc0", "cc-0", "cc by", "cc-by",
+        "creativecommons.org/publicdomain", "creativecommons.org/licenses/by",
+        "gfdl", "free artwork", "attribution"
+    ]
+    return any(kw in combined for kw in valid_keywords)
+
+
+# ── Wikimedia & Archive.org & NASA Media search fallbacks ────────────────────
+
+async def _search_wikimedia(keywords: list[str], client: httpx.AsyncClient) -> list[dict]:
+    """Search Wikimedia Commons for public domain/CC landscape images and media."""
+    query = " ".join(keywords[:3])
+    url = "https://commons.wikimedia.org/w/api.php"
+    params = {
+        "action": "query",
+        "format": "json",
+        "generator": "search",
+        "gsrsearch": f"file:{query} landscape",
+        "gsrlimit": 10,
+        "prop": "imageinfo",
+        "iiprop": "url|mime|dimensions|extmetadata",
+    }
+    results = []
+    accepted_count = 0
+    rejected_count = 0
+    try:
+        resp = await client.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            pages = data.get("query", {}).get("pages", {})
+            for pid, page in pages.items():
+                imageinfo = page.get("imageinfo", [])
+                if not imageinfo:
+                    continue
+                info = imageinfo[0]
+                img_url = info.get("url")
+                width = info.get("width", 0)
+                height = info.get("height", 0)
+                mime = info.get("mime", "")
+                ext = info.get("extmetadata", {})
+                
+                # Mandatory license filtering condition
+                lic_valid = _is_valid_license(ext)
+                if img_url and (width >= height) and ("image" in mime or "video" in mime):
+                    if lic_valid:
+                        accepted_count += 1
+                        artist = ext.get("Artist", {}).get("value", "Wikimedia Contributor")
+                        results.append({
+                            "source": "wikimedia",
+                            "download_url": img_url,
+                            "width": width,
+                            "height": height,
+                            "duration": 0,
+                            "attribution": f"Media by {artist} from Wikimedia Commons",
+                            "is_image": True,
+                        })
+                    else:
+                        rejected_count += 1
+                        lic_name = ext.get("LicenseShortName", {}).get("value", "Unknown")
+                        print(f"[Footage] [Wikimedia REJECTED] '{page.get('title')}' due to non-free license: {lic_name}")
+                else:
+                    rejected_count += 1
+            print(f"[Footage] [Wikimedia License Audit] Query '{query}': {accepted_count} Accepted, {rejected_count} Rejected")
+    except Exception as e:
+        print(f"[Footage] Wikimedia search failed for '{query}': {e}")
+    return results
+
+
+async def _search_archive_org(keywords: list[str], client: httpx.AsyncClient) -> list[dict]:
+    """Search Archive.org for Public Domain / CC movies and images."""
+    query = " ".join(keywords[:3])
+    url = "https://archive.org/advancedsearch.php"
+    params = {
+        "q": f"{query} AND (mediatype:movies OR mediatype:image)",
+        "fl[]": ["identifier", "title", "mediatype", "licenseurl"],
+        "sort[]": "downloads desc",
+        "rows": 8,
+        "output": "json",
+    }
+    results = []
+    accepted_count = 0
+    rejected_count = 0
+    try:
+        resp = await client.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            docs = resp.json().get("response", {}).get("docs", [])
+            for doc in docs:
+                identifier = doc.get("identifier")
+                lic_url = doc.get("licenseurl", "")
+                is_valid = _is_valid_license({}, lic_url) or ("publicdomain" in lic_url.lower()) or not lic_url
+                if is_valid and identifier:
+                    accepted_count += 1
+                    meta_url = f"https://archive.org/metadata/{identifier}"
+                    try:
+                        m_resp = await client.get(meta_url, timeout=8)
+                        if m_resp.status_code == 200:
+                            files = m_resp.json().get("files", [])
+                            media_f = next((f["name"] for f in files if f.get("name", "").endswith((".mp4", ".jpg", ".jpeg"))), None)
+                            if media_f:
+                                is_img = not media_f.endswith(".mp4")
+                                results.append({
+                                    "source": "archive_org",
+                                    "download_url": f"https://archive.org/download/{identifier}/{media_f}",
+                                    "width": 1920,
+                                    "height": 1080,
+                                    "duration": 0 if is_img else 10,
+                                    "attribution": f"Media from Archive.org ({doc.get('title', identifier)})",
+                                    "is_image": is_img,
+                                })
+                    except Exception:
+                        pass
+                else:
+                    rejected_count += 1
+                    print(f"[Footage] [Archive.org REJECTED] '{identifier}' due to non-free license: {lic_url}")
+            print(f"[Footage] [Archive.org License Audit] Query '{query}': {accepted_count} Accepted, {rejected_count} Rejected")
+    except Exception as e:
+        print(f"[Footage] Archive.org search failed for '{query}': {e}")
+    return results
+
+
+async def _search_loc(keywords: list[str], client: httpx.AsyncClient) -> list[dict]:
+    """Search Library of Congress (LOC) API for historical media."""
+    query = " ".join(keywords[:3])
+    url = "https://www.loc.gov/pictures/search/"
+    params = {"q": query, "fo": "json", "c": 6}
+    results = []
+    try:
+        resp = await client.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            hits = resp.json().get("results", [])
+            for item in hits:
+                img_info = item.get("image", {})
+                img_url = img_info.get("full") or img_info.get("square")
+                if img_url:
+                    if img_url.startswith("//"):
+                        img_url = "https:" + img_url
+                    results.append({
+                        "source": "loc",
+                        "download_url": img_url,
+                        "width": 1920,
+                        "height": 1080,
+                        "duration": 0,
+                        "attribution": f"Historical media courtesy of Library of Congress ({item.get('title', 'LOC')})",
+                        "is_image": True,
+                    })
+    except Exception as e:
+        print(f"[Footage] LOC search failed for '{query}': {e}")
+    return results
+
+
+async def _search_nasa(keywords: list[str], client: httpx.AsyncClient) -> list[dict]:
+    """Search NASA Image and Video Library API for space/science media."""
+    query = " ".join(keywords[:3])
+    url = "https://images-api.nasa.gov/search"
+    params = {
+        "q": query,
+        "media_type": "image",
+    }
+    results = []
+    try:
+        resp = await client.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("collection", {}).get("items", [])[:6]
+            for item in items:
+                links = item.get("links", [])
+                data_info = item.get("data", [{}])[0]
+                img_url = None
+                for link in links:
+                    if link.get("rel") == "preview" or link.get("render") == "image":
+                        img_url = link.get("href")
+                        break
+                if img_url:
+                    results.append({
+                        "source": "nasa",
+                        "download_url": img_url,
+                        "width": 1920,
+                        "height": 1080,
+                        "duration": 0,
+                        "attribution": f"Media courtesy of NASA ({data_info.get('title', 'Public Domain')})",
+                        "is_image": True,
+                    })
+    except Exception as e:
+        print(f"[Footage] NASA search failed for '{query}': {e}")
+    return results
+
+
+async def _search_nasa_apod(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch NASA APOD (Astronomy Picture of the Day)."""
+    import os
+    nasa_key = os.getenv("NASA_API_KEY", "DEMO_KEY")
+    url = "https://api.nasa.gov/planetary/apod"
+    params = {"api_key": nasa_key}
+    results = []
+    try:
+        resp = await client.get(url, params=params, timeout=12)
+        if resp.status_code == 200:
+            data = resp.json()
+            img_url = data.get("url")
+            if img_url and data.get("media_type") == "image":
+                results.append({
+                    "source": "nasa_apod",
+                    "download_url": img_url,
+                    "width": 1920,
+                    "height": 1080,
+                    "duration": 0,
+                    "attribution": f"NASA APOD: {data.get('title', 'Space Image')}",
+                    "is_image": True,
+                })
+    except Exception as e:
+        print(f"[Footage] NASA APOD failed: {e}")
+    return results
+
+
+# ── Download file to local disk with Retries & User-Agent ────────────────────
+
+async def _download_video(url: str, output_path: str, client: httpx.AsyncClient, max_retries: int = 3) -> None:
+    """Download a video/image file to local disk with automatic retry on network drops."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+    }
+    
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with client.stream("GET", url, headers=headers, timeout=90, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                with open(output_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=16384):
+                        f.write(chunk)
+            print(f"[Footage] Downloaded to {output_path} (attempt {attempt})")
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[Footage] Download attempt {attempt}/{max_retries} failed for {url}: {e}")
+            # Clean incomplete file
+            if Path(output_path).exists():
+                try:
+                    Path(output_path).unlink()
+                except Exception:
+                    pass
+            if attempt < max_retries:
+                await asyncio.sleep( attempt * 1.5 )
+                
+    raise RuntimeError(f"Failed to download footage after {max_retries} attempts: {last_err}")
 
 
 # ── Fetch single clip/image with landscape verification ────────────────────
@@ -295,7 +541,32 @@ async def fetch_footage_for_shot(
         print(f"[Footage] No Pexels image found for {keywords}, trying Pixabay image fallback...")
         candidates = await _search_pixabay_images(keywords, client)
 
-    # 5. Single broader keyword fallbacks
+    # 5. Wikimedia Commons Fallback
+    if not candidates:
+        print(f"[Footage] Trying Wikimedia Commons fallback for {keywords}...")
+        candidates = await _search_wikimedia(keywords, client)
+
+    # 6. Archive.org Fallback
+    if not candidates:
+        print(f"[Footage] Trying Archive.org fallback for {keywords}...")
+        candidates = await _search_archive_org(keywords, client)
+
+    # 7. Library of Congress (LOC) Fallback
+    if not candidates:
+        print(f"[Footage] Trying Library of Congress (LOC) fallback for {keywords}...")
+        candidates = await _search_loc(keywords, client)
+
+    # 8. NASA Media Fallback
+    if not candidates:
+        print(f"[Footage] Trying NASA Media API fallback for {keywords}...")
+        candidates = await _search_nasa(keywords, client)
+
+    # 9. NASA APOD Fallback
+    if not candidates:
+        print(f"[Footage] Trying NASA APOD fallback for {keywords}...")
+        candidates = await _search_nasa_apod(client)
+
+    # 10. Single broader keyword fallbacks
     if not candidates:
         for kw in keywords:
             candidates = await _search_pexels([kw], min_duration, client)
@@ -310,48 +581,69 @@ async def fetch_footage_for_shot(
     if not candidates:
         raise RuntimeError(f"No footage or image found for keywords: {keywords}")
 
-    # Pick candidate not in used_urls, or first one
+    # Try downloading candidates sequentially until one succeeds
+    downloaded_successfully = False
     chosen = None
-    for cand in candidates:
-        if cand["download_url"] not in used_urls:
-            chosen = cand
-            break
-    if not chosen:
-        chosen = candidates[0]
-
-    used_urls.add(chosen["download_url"])
-
-    # Determine final file path (if image, use .jpg extension)
-    is_image = chosen.get("is_image", False)
     final_output_path = output_path
-    if is_image and not final_output_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-        final_output_path = str(Path(output_path).with_suffix(".jpg"))
 
-    # Download locally
-    await _download_video(chosen["download_url"], final_output_path, client)
+    # Prioritize candidates not yet used
+    ordered_candidates = [c for c in candidates if c["download_url"] not in used_urls] + [c for c in candidates if c["download_url"] in used_urls]
 
-    # Post-download verification via ffprobe (skip strict height check for images if valid)
-    if not is_image and not _is_landscape(final_output_path):
-        print(f"[Footage] Downloaded clip was not landscape ({final_output_path}). Trying next candidate...")
-        for cand in candidates:
-            if cand["download_url"] == chosen["download_url"]:
+    for cand in ordered_candidates:
+        is_image = cand.get("is_image", False)
+        target_path = output_path
+        if is_image and not target_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            target_path = str(Path(output_path).with_suffix(".jpg"))
+
+        try:
+            await _download_video(cand["download_url"], target_path, client)
+            
+            # Post-download verification via ffprobe (skip height check for images if valid)
+            if not is_image and not _is_landscape(target_path):
+                print(f"[Footage] Clip was not landscape ({target_path}), trying next candidate...")
+                Path(target_path).unlink(missing_ok=True)
                 continue
-            await _download_video(cand["download_url"], final_output_path, client)
-            if _is_landscape(final_output_path):
-                chosen = cand
-                used_urls.add(chosen["download_url"])
-                break
+                
+            chosen = cand
+            final_output_path = target_path
+            used_urls.add(chosen["download_url"])
+            downloaded_successfully = True
+            print(f"[Footage] [Shot Source Resolution] Source='{chosen['source']}' ({'IMAGE' if chosen.get('is_image') else 'VIDEO'}) for keywords={keywords}")
+            break
+        except Exception as dl_err:
+            print(f"[Footage] Candidate download failed ({cand['download_url']}): {dl_err}. Trying next candidate...")
+            continue
+
+    if not downloaded_successfully or not chosen:
+        print(f"[Footage] All download candidates failed for {keywords}. Generating local emergency dark frame...")
+        fallback_img = str(Path(output_path).with_suffix(".jpg"))
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x0f172a:s=1920x1080:d=1", "-vframes", "1", fallback_img],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            final_output_path = fallback_img
+            chosen = {
+                "source": "imaginAI local fallback",
+                "attribution": "Generated by imaginAI",
+                "is_image": True,
+            }
+        except Exception as ff_err:
+            raise RuntimeError(f"All candidates and local fallback generation failed: {ff_err}")
 
     # Save attribution
     attr_data = {
         "source": chosen["source"],
         "attribution": chosen["attribution"],
         "keywords": keywords,
-        "is_image": is_image,
+        "is_image": chosen.get("is_image", False),
     }
     Path(attr_path).write_text(json.dumps(attr_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return final_output_path
+
 
 
 # ── All scenes & shots fetching ─────────────────────────────────────────────
